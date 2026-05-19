@@ -1,0 +1,35 @@
+[display]
+columns       = 3
+window_width  = 600
+window_height = 400
+card_ratio    = 1.45
+spacing       = 10
+padding       = 12
+window_x      = 660
+window_y      = 320
+font_size     = 13
+
+[steam]
+enabled   = true
+steamapps = "~/.steam/steam/steamapps"
+# SteamGridDB key → set env var SGDB_KEY (do not put the key here)
+
+[heroic]
+enabled       = true
+legendary_dir = "~/.config/heroic/legendaryConfig/legendary"
+
+[pcsx2]
+enabled    = true
+emulator   = "pcsx2-qt"
+game_dirs  = ["~/Games", "~/PS2games"]
+extensions = ["iso", "bin", "img", "mdf", "nrg"]
+
+[custom]
+enabled = true
+
+[[custom.sources]]
+name       = "Pirated"
+tag        = "WIN"
+dirs       = ["~/pgames"]
+extensions = ["exe", "sh"]
+launch     = "wine {path}"
