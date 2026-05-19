@@ -36,8 +36,9 @@ def _acquire_lock() -> bool:
 
 load_dotenv(Path(__file__).parent / ".env")
 
-COVER_CACHE = Path.home() / ".cache" / "hofi"
-STEAM_CDN   = "https://cdn.akamai.steamstatic.com/steam/apps/{appid}/library_600x900.jpg"
+COVER_CACHE     = Path.home() / ".cache" / "hofi"
+GAME_CACHE_PATH = COVER_CACHE / "games.json"
+STEAM_CDN       = "https://cdn.akamai.steamstatic.com/steam/apps/{appid}/library_600x900.jpg"
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 
@@ -88,6 +89,29 @@ class Game:
     tag:        str
     launch_cmd: list
     cover:      str = ""
+
+
+# ---------------------------------------------------------------------------
+# Game list cache
+# ---------------------------------------------------------------------------
+
+def load_game_cache() -> list["Game"]:
+    try:
+        data = json.loads(GAME_CACHE_PATH.read_text())
+        return [Game(**d) for d in data]
+    except Exception:
+        return []
+
+def save_game_cache(games: list["Game"]) -> None:
+    COVER_CACHE.mkdir(parents=True, exist_ok=True)
+    GAME_CACHE_PATH.write_text(json.dumps(
+        [{"title": g.title, "tag": g.tag, "launch_cmd": g.launch_cmd, "cover": g.cover}
+         for g in games],
+        indent=2,
+    ))
+
+def _game_keys(games: list["Game"]) -> set[str]:
+    return {f"{g.tag}:{g.title}" for g in games}
 
 
 # ---------------------------------------------------------------------------
@@ -443,13 +467,22 @@ def get_custom_games(cfg: dict) -> list[Game]:
     return sorted(games, key=lambda g: g.title.casefold())
 
 
+def _collect_games(cfg: dict) -> list[Game]:
+    games: list[Game] = []
+    games.extend(get_steam_games(cfg.get("steam", {})))
+    games.extend(get_heroic_games(cfg.get("heroic", {})))
+    games.extend(get_pcsx2_games(cfg.get("pcsx2", {})))
+    games.extend(get_custom_games(cfg.get("custom", {})))
+    return games
+
+
 # ---------------------------------------------------------------------------
 # GTK launcher UI
 # ---------------------------------------------------------------------------
 
 _CSS = b"""
 window {
-    background-color: rgba(0, 0, 0, 0.65);
+    background-color: rgba(0, 0, 0, 0.6);
     border: 2px solid #ffffff;
 }
 scrolledwindow, viewport {
@@ -470,7 +503,7 @@ flowbox {
     padding: 0;
 }
 flowboxchild {
-    background-color: rgba(0, 0, 0, 0.65);
+    background-color: rgba(0, 0, 0, 0);
     border: none;
     border-radius: 0;
     padding: 8px;
@@ -548,20 +581,24 @@ def _fallback_pixbuf(icon_name: str, size: int) -> GdkPixbuf.Pixbuf | None:
         return None
 
 
-def run_gui(games: list[Game], display_cfg: dict, sgdb_key: str = "") -> Game | None:
+def run_gui(
+    games: list[Game],
+    display_cfg: dict,
+    sgdb_key: str = "",
+    rescan_fn=None,
+) -> Game | None:
     columns       = display_cfg.get("columns", 3)
     window_width  = display_cfg.get("window_width", 900)
     window_height = display_cfg.get("window_height", 700)
     card_ratio    = display_cfg.get("card_ratio", 1.5)
     spacing       = display_cfg.get("spacing", 4)
     padding       = display_cfg.get("padding", 12)
-    # card width fills inner area: window minus edge padding on both sides, minus gaps, minus card internal padding
     icon_size     = (window_width - 2 * padding - (columns - 1) * spacing) // columns - 16
     font_size     = display_cfg.get("font_size", 13)
 
     chosen: list[Game] = []
+    current_games: list[Game] = []
 
-    # Apply CSS — inject scaled font size
     css = Gtk.CssProvider()
     css.load_from_data(_CSS + f".game-title {{ font-size: {font_size}px; }}".encode())
     Gtk.StyleContext.add_provider_for_screen(
@@ -579,12 +616,10 @@ def run_gui(games: list[Game], display_cfg: dict, sgdb_key: str = "") -> Game | 
     win.set_size_request(window_width, window_height)
     win.set_wmclass("hofi", "hofi")
 
-    # Layer-shell: same mechanism rofi uses — non-movable, exclusive keyboard
     GtkLayerShell.init_for_window(win)
     GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
     GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.EXCLUSIVE)
 
-    # Position on primary monitor (fall back to first monitor)
     display  = Gdk.Display.get_default()
     monitor  = display.get_primary_monitor() or display.get_monitor(0)
     geo      = monitor.get_geometry()
@@ -616,48 +651,62 @@ def run_gui(games: list[Game], display_cfg: dict, sgdb_key: str = "") -> Game | 
     scroll.add(flow)
 
     card_w = icon_size
-    card_h = int(icon_size * card_ratio) + 40  # image + label area
+    card_h = int(icon_size * card_ratio) + 40
 
-    # Build tiles
-    pending_covers: list[tuple] = []  # (game, Gtk.Image) for deferred fetching
-    for game in games:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.set_size_request(card_w, card_h)
-        box.set_halign(Gtk.Align.CENTER)
+    def _populate(new_games: list[Game]) -> bool:
+        current_games[:] = new_games
+        for child in flow.get_children():
+            child.destroy()
+        pending: list[tuple] = []
+        for game in new_games:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.set_size_request(card_w, card_h)
+            box.set_halign(Gtk.Align.CENTER)
 
-        pb = None
-        if game.cover and os.path.isabs(game.cover):
-            pb = _load_pixbuf(game.cover, icon_size, card_ratio)
+            pb = None
+            if game.cover and os.path.isabs(game.cover):
+                pb = _load_pixbuf(game.cover, icon_size, card_ratio)
 
-        needs_fetch = pb is None and game.tag == "STEAM"
+            needs_fetch = pb is None and game.tag == "STEAM"
 
-        if pb is None:
-            icon_name = FALLBACK_ICONS.get(game.tag, "application-x-executable")
-            pb = _fallback_pixbuf(icon_name, icon_size)
+            if pb is None:
+                icon_name = FALLBACK_ICONS.get(game.tag, "application-x-executable")
+                pb = _fallback_pixbuf(icon_name, icon_size)
 
-        if pb:
-            img = Gtk.Image.new_from_pixbuf(pb)
-        else:
-            img = Gtk.Image.new_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
-        img.set_halign(Gtk.Align.CENTER)
-        box.pack_start(img, False, False, 0)
+            if pb:
+                img = Gtk.Image.new_from_pixbuf(pb)
+            else:
+                img = Gtk.Image.new_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
+            img.set_halign(Gtk.Align.CENTER)
+            box.pack_start(img, False, False, 0)
 
-        if needs_fetch:
-            pending_covers.append((game, img))
+            if needs_fetch:
+                pending.append((game, img))
 
-        lbl = Gtk.Label(label=game.title)
-        lbl.set_line_wrap(True)
-        lbl.set_max_width_chars(18)
-        lbl.set_halign(Gtk.Align.CENTER)
-        lbl.set_valign(Gtk.Align.CENTER)
-        lbl.set_justify(Gtk.Justification.CENTER)
-        lbl.get_style_context().add_class("game-title")
-        box.pack_start(lbl, True, True, 0)
+            lbl = Gtk.Label(label=game.title)
+            lbl.set_line_wrap(True)
+            lbl.set_max_width_chars(18)
+            lbl.set_halign(Gtk.Align.CENTER)
+            lbl.set_valign(Gtk.Align.CENTER)
+            lbl.set_justify(Gtk.Justification.CENTER)
+            lbl.get_style_context().add_class("game-title")
+            box.pack_start(lbl, True, True, 0)
 
-        flow.add(box)
+            flow.add(box)
+
+        flow.show_all()
+        if pending:
+            threading.Thread(
+                target=_fetch_covers_bg,
+                args=(pending, sgdb_key, icon_size, card_ratio),
+                daemon=True,
+            ).start()
+        return False
+
+    _populate(games)
 
     def _launch_child(child):
-        chosen.append(games[child.get_index()])
+        chosen.append(current_games[child.get_index()])
         win.destroy()
         Gtk.main_quit()
 
@@ -689,12 +738,8 @@ def run_gui(games: list[Game], display_cfg: dict, sgdb_key: str = "") -> Game | 
 
     win.show_all()
 
-    if pending_covers:
-        threading.Thread(
-            target=_fetch_covers_bg,
-            args=(pending_covers, sgdb_key, icon_size, card_ratio),
-            daemon=True,
-        ).start()
+    if rescan_fn is not None:
+        threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
 
     Gtk.main()
 
@@ -725,18 +770,25 @@ def main() -> None:
     with open(CONFIG_PATH, "rb") as f:
         cfg = tomllib.load(f)
 
-    games: list[Game] = []
-    games.extend(get_steam_games(cfg.get("steam", {})))
-    games.extend(get_heroic_games(cfg.get("heroic", {})))
-    games.extend(get_pcsx2_games(cfg.get("pcsx2", {})))
-    games.extend(get_custom_games(cfg.get("custom", {})))
-
-    if not games:
-        print("hofi: no games found — check config.toml")
-        return
-
     sgdb_key = os.environ.get("SGDB_KEY", "")
-    selected = run_gui(games, cfg.get("display", {}), sgdb_key)
+    cached   = load_game_cache()
+
+    if cached:
+        def rescan(refresh_cb):
+            fresh = _collect_games(cfg)
+            save_game_cache(fresh)
+            if _game_keys(fresh) != _game_keys(cached):
+                GLib.idle_add(refresh_cb, fresh)
+
+        selected = run_gui(cached, cfg.get("display", {}), sgdb_key, rescan_fn=rescan)
+    else:
+        games = _collect_games(cfg)
+        if not games:
+            print("hofi: no games found — check config.toml")
+            return
+        save_game_cache(games)
+        selected = run_gui(games, cfg.get("display", {}), sgdb_key)
+
     if selected:
         launch(selected)
 
