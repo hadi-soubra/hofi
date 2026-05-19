@@ -15,15 +15,25 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 import fcntl
+import signal
+import sys
 import threading
+
+_show_pending = threading.Event()
+
+# Must register before GTK imports (which are slow) so SIGUSR1
+# doesn't kill the process while libraries are loading
+if "--daemon" in sys.argv:
+    signal.signal(signal.SIGUSR1, lambda *_: _show_pending.set())
 
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, GtkLayerShell
 
-_LOCK_FILE = Path("/tmp/hofi.lock")
-_lock_fh   = None  # held for the lifetime of the process
+_LOCK_FILE    = Path("/tmp/hofi.lock")
+_VISIBLE_FILE = Path("/tmp/hofi.visible")
+_lock_fh      = None  # held for the lifetime of the process
 
 def _acquire_lock() -> bool:
     global _lock_fh
@@ -586,6 +596,7 @@ def run_gui(
     display_cfg: dict,
     sgdb_key: str = "",
     rescan_fn=None,
+    daemon: bool = False,
 ) -> Game | None:
     columns       = display_cfg.get("columns", 3)
     window_width  = display_cfg.get("window_width", 900)
@@ -654,6 +665,8 @@ def run_gui(
     card_h = int(icon_size * card_ratio) + 40
 
     def _populate(new_games: list[Game]) -> bool:
+        if _game_keys(new_games) == _game_keys(current_games):
+            return False
         current_games[:] = new_games
         for child in flow.get_children():
             child.destroy()
@@ -706,9 +719,16 @@ def run_gui(
     _populate(games)
 
     def _launch_child(child):
-        chosen.append(current_games[child.get_index()])
-        win.destroy()
-        Gtk.main_quit()
+        game = current_games[child.get_index()]
+        if daemon:
+            _VISIBLE_FILE.unlink(missing_ok=True)
+            win.hide()
+            flow.unselect_all()
+            launch(game)
+        else:
+            chosen.append(game)
+            win.destroy()
+            Gtk.main_quit()
 
     def on_flow_button_press(_widget, event):
         child = flow.get_child_at_pos(int(event.x), int(event.y))
@@ -723,8 +743,13 @@ def run_gui(
 
     def on_key_press(widget, event):
         if event.keyval == Gdk.KEY_Escape:
-            win.destroy()
-            Gtk.main_quit()
+            if daemon:
+                _VISIBLE_FILE.unlink(missing_ok=True)
+                win.hide()
+                flow.unselect_all()
+            else:
+                win.destroy()
+                Gtk.main_quit()
         elif event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             sel = flow.get_selected_children()
             if sel:
@@ -736,10 +761,32 @@ def run_gui(
     win.connect("key-press-event", on_key_press)
     win.connect("destroy", Gtk.main_quit)
 
-    win.show_all()
+    if daemon:
+        def _toggle():
+            if win.get_visible():
+                _VISIBLE_FILE.unlink(missing_ok=True)
+                win.hide()
+                flow.unselect_all()
+            else:
+                _VISIBLE_FILE.touch()
+                win.show_all()
+                win.present()
+                if rescan_fn is not None:
+                    threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
 
-    if rescan_fn is not None:
-        threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
+        def _poll_signal():
+            if _show_pending.is_set():
+                _show_pending.clear()
+                _toggle()
+            return True  # keep polling
+
+        signal.signal(signal.SIGUSR1, lambda *_: _show_pending.set())
+        GLib.timeout_add(100, _poll_signal)
+        win.realize()
+    else:
+        win.show_all()
+        if rescan_fn is not None:
+            threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
 
     Gtk.main()
 
@@ -760,6 +807,12 @@ def launch(game: Game) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    daemon_mode = "--daemon" in sys.argv
+
+    if daemon_mode:
+        # Register immediately so SIGUSR1 doesn't kill us during the slow startup
+        signal.signal(signal.SIGUSR1, lambda *_: _show_pending.set())
+
     if not _acquire_lock():
         return  # another instance is already running
 
@@ -773,21 +826,26 @@ def main() -> None:
     sgdb_key = os.environ.get("SGDB_KEY", "")
     cached   = load_game_cache()
 
-    if cached:
-        def rescan(refresh_cb):
-            fresh = _collect_games(cfg)
-            save_game_cache(fresh)
-            if _game_keys(fresh) != _game_keys(cached):
-                GLib.idle_add(refresh_cb, fresh)
+    def rescan(refresh_cb):
+        fresh = _collect_games(cfg)
+        save_game_cache(fresh)
+        GLib.idle_add(refresh_cb, fresh)  # _populate skips rebuild if nothing changed
 
-        selected = run_gui(cached, cfg.get("display", {}), sgdb_key, rescan_fn=rescan)
+    if cached:
+        selected = run_gui(
+            cached, cfg.get("display", {}), sgdb_key,
+            rescan_fn=rescan, daemon=daemon_mode,
+        )
     else:
         games = _collect_games(cfg)
         if not games:
             print("hofi: no games found — check config.toml")
             return
         save_game_cache(games)
-        selected = run_gui(games, cfg.get("display", {}), sgdb_key)
+        selected = run_gui(
+            games, cfg.get("display", {}), sgdb_key,
+            rescan_fn=rescan, daemon=daemon_mode,
+        )
 
     if selected:
         launch(selected)
