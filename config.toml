@@ -6,7 +6,7 @@ card_ratio    = 1.45
 spacing       = 10
 padding       = 12
 window_x      = 660
-window_y      = 320
+window_y      = 318
 font_size     = 13
 
 [steam]
@@ -21,7 +21,8 @@ legendary_dir = "~/.config/heroic/legendaryConfig/legendary"
 [pcsx2]
 enabled    = true
 emulator   = "pcsx2-qt"
-game_dirs  = ["~/Games", "~/PS2games"]
+game_dirs  = ["~/PS2games"]
+slow_boot  = true   # boot through the BIOS (PS2 startup animation) first
 extensions = ["iso", "bin", "img", "mdf", "nrg"]
 
 [custom]
@@ -33,3 +34,10 @@ tag        = "WIN"
 dirs       = ["~/pgames"]
 extensions = ["exe", "sh"]
 launch     = "wine {path}"
+
+[[custom.entries]]
+title  = "Minecraft"
+tag    = "MC"
+dir    = "/usr/games/tlauncher"
+launch = "/usr/games/tlauncher/lib/jvm/jre/bin/java -Dfile.encoding=UTF8 -jar /usr/games/tlauncher/starter-core.jar"
+cover  = "~/holder/Projects/hofi/assets/minecraft.png"

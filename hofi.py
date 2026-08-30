@@ -72,6 +72,7 @@ legendary_dir = "~/.config/heroic/legendaryConfig/legendary"
 enabled    = true
 emulator   = "pcsx2-qt"
 game_dirs  = ["~/Games", "~/PS2games"]
+slow_boot  = false
 extensions = ["iso", "bin", "img", "mdf", "nrg"]
 
 [custom]
@@ -90,6 +91,7 @@ FALLBACK_ICONS = {
     "EPIC":  "heroic",
     "PS2":   "pcsx2",
     "WIN":   "wine",
+    "MC":    "tlauncher",
 }
 
 
@@ -425,6 +427,9 @@ def get_pcsx2_games(cfg: dict) -> list[Game]:
     game_dirs = [Path(d).expanduser() for d in cfg.get("game_dirs", ["~/Games"])]
     exts      = {e.lower().lstrip(".") for e in cfg.get("extensions",
                  ["iso", "bin", "img", "mdf", "nrg"])}
+    # slow_boot → run the BIOS (PS2 boot animation) before the disc
+    args      = ["-slowboot"] if cfg.get("slow_boot", False) else []
+    args     += list(cfg.get("emulator_args", []))
     games: list[Game] = []
     seen: set[str]    = set()
     for gdir in game_dirs:
@@ -438,7 +443,7 @@ def get_pcsx2_games(cfg: dict) -> list[Game]:
                     games.append(Game(
                         title=p.stem,
                         tag="PS2",
-                        launch_cmd=[emulator, str(p)],
+                        launch_cmd=[emulator, *args, "--", str(p)],
                         cover=_pcsx2_cover(p),
                     ))
     return sorted(games, key=lambda g: g.title.casefold())
@@ -474,6 +479,25 @@ def get_custom_games(cfg: dict) -> list[Game]:
                             launch_cmd=["sh", "-c", cmd_str],
                             cover=icon,
                         ))
+
+    # Single fixed entries (launchers/apps that aren't a directory of files)
+    for entry in cfg.get("entries", []):
+        title  = entry.get("title", "").strip()
+        launch = entry.get("launch", "").strip()
+        if not title or not launch:
+            continue
+        workdir = entry.get("dir", "")
+        if workdir:
+            launch = f"cd {shlex.quote(str(Path(workdir).expanduser()))} && exec {launch}"
+        cover = entry.get("cover", "")
+        if cover.startswith("~") or cover.startswith("/"):
+            cover = str(Path(cover).expanduser())
+        games.append(Game(
+            title=title,
+            tag=entry.get("tag", "APP")[:6].upper(),
+            launch_cmd=["sh", "-c", launch],
+            cover=cover,
+        ))
     return sorted(games, key=lambda g: g.title.casefold())
 
 
@@ -625,7 +649,6 @@ def run_gui(
     win.set_visual(screen.get_rgba_visual() or screen.get_system_visual())
     win.set_default_size(window_width, window_height)
     win.set_size_request(window_width, window_height)
-    win.set_wmclass("hofi", "hofi")
 
     GtkLayerShell.init_for_window(win)
     GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
@@ -679,6 +702,8 @@ def run_gui(
             pb = None
             if game.cover and os.path.isabs(game.cover):
                 pb = _load_pixbuf(game.cover, icon_size, card_ratio)
+            elif game.cover:
+                pb = _fallback_pixbuf(game.cover, icon_size)
 
             needs_fetch = pb is None and game.tag == "STEAM"
 

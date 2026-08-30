@@ -12,6 +12,7 @@ Displays as a fullscreen-capable cover-grid overlay (like rofi, but for games) u
 - **Heroic / Epic** — reads legendary's `installed.json` and metadata for proper titles and icons
 - **PCSX2** — scans configured directories for ISO/BIN/IMG/etc. files and matches local cover art
 - **Custom sources** — define your own directories, file extensions, and launch commands (e.g. Wine for Windows executables)
+- **Custom entries** — pin a single app or launcher (e.g. TLauncher for Minecraft) with its own command and cover
 - Cover art fallback chain: local cache → Steam CDN portrait → SteamGridDB → landscape CDN + blurred padding → theme icon
 - Single-instance lock via `flock`
 - Keyboard navigation: arrow keys to move, `Enter` to launch, `Escape` to close
@@ -69,6 +70,7 @@ legendary_dir = "~/.config/heroic/legendaryConfig/legendary"
 enabled    = true
 emulator   = "pcsx2-qt"
 game_dirs  = ["~/Games", "~/PS2games"]
+slow_boot  = false  # true → full BIOS boot (PS2 startup animation) before the game
 extensions = ["iso", "bin", "img", "mdf", "nrg"]
 
 [custom]
@@ -80,6 +82,14 @@ tag        = "WIN"
 dirs       = ["~/pgames"]
 extensions = ["exe", "sh"]
 launch     = "wine {path}"
+
+# Single apps/launchers that aren't a directory of game files
+[[custom.entries]]
+title  = "Minecraft"
+tag    = "MC"
+dir    = "/usr/games/tlauncher"          # optional working directory
+launch = "/usr/games/tlauncher/lib/jvm/jre/bin/java -jar /usr/games/tlauncher/starter-core.jar"
+cover  = "~/holder/Projects/hofi/assets/minecraft.png"   # path, or an icon-theme name
 ```
 
 ### SteamGridDB covers
