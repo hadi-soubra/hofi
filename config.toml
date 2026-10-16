@@ -5,8 +5,7 @@ window_height = 400
 card_ratio    = 1.45
 spacing       = 10
 padding       = 12
-window_x      = 660
-window_y      = 318
+# no window_x / window_y → centered in the free screen area, same spot as rofi
 font_size     = 13
 
 [steam]

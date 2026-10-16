@@ -111,10 +111,11 @@ SGDB_KEY=your_key_here
 
 ## launcher.sh
 
-The included `launcher.sh` toggles between hofi and rofi — useful as a single hotkey binding:
+The included `launcher.sh` cycles rofi → hofi → aofi → rofi — useful as a single hotkey or gesture binding:
 
 - If rofi is open → close rofi and open hofi
-- If hofi is open → close hofi and open rofi
+- If hofi is open → close hofi and open [aofi](https://github.com/hadi-soubra/aofi) (anime launcher)
+- If aofi is open → close aofi and open rofi
 - Otherwise → open rofi
 
 Bind it to a key in your compositor config.

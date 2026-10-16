@@ -516,7 +516,7 @@ def _collect_games(cfg: dict) -> list[Game]:
 
 _CSS = b"""
 window {
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: rgba(0, 0, 0, 0.7);
     border: 2px solid #ffffff;
 }
 scrolledwindow, viewport {
@@ -565,6 +565,24 @@ flowboxchild:selected .game-title {
     padding: 6px 4px 2px 4px;
 }
 """
+
+def _rofi_font() -> tuple[str, str]:
+    """(family, size) of rofi's font, e.g. ("JetBrains Mono", "12"), so the
+    launchers match rofi; display.font in config.toml overrides it."""
+    try:
+        text = (Path.home() / ".config/rofi/config.rasi").read_text()
+        spec = re.search(r'^\s*font:\s*"([^"]+)"', text, re.M).group(1)
+    except Exception:
+        return "", ""
+    family, _, size = spec.rpartition(" ")
+    return (family, size) if size.replace(".", "", 1).isdigit() else (spec, "")
+
+def _font_spec(display_cfg: dict) -> tuple[str, str]:
+    spec = display_cfg.get("font")
+    if not spec:
+        return _rofi_font()
+    family, _, size = spec.rpartition(" ")
+    return (family, size) if size.replace(".", "", 1).isdigit() else (spec, "")
 
 def _fetch_covers_bg(
     pending: list[tuple],  # list of (game, Gtk.Image)
@@ -635,7 +653,11 @@ def run_gui(
     current_games: list[Game] = []
 
     css = Gtk.CssProvider()
-    css.load_from_data(_CSS + f".game-title {{ font-size: {font_size}px; }}".encode())
+    font_family, _font_size = _font_spec(display_cfg)
+    extra_css = f".game-title {{ font-size: {font_size}px; }}"
+    if font_family:
+        extra_css += f' * {{ font-family: "{font_family}"; }}'
+    css.load_from_data(_CSS + extra_css.encode())
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), css,
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
@@ -654,17 +676,20 @@ def run_gui(
     GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
     GtkLayerShell.set_keyboard_mode(win, GtkLayerShell.KeyboardMode.EXCLUSIVE)
 
-    display  = Gdk.Display.get_default()
-    monitor  = display.get_primary_monitor() or display.get_monitor(0)
-    geo      = monitor.get_geometry()
+    # Without window_x/window_y nothing is anchored, so the compositor centers the
+    # window in the space bars (waybar) leave free — exactly where rofi puts itself
     window_x = display_cfg.get("window_x")
     window_y = display_cfg.get("window_y")
-    margin_x = window_x if window_x is not None else (geo.width  - window_width)  // 2
-    margin_y = window_y if window_y is not None else (geo.height - window_height) // 2
-    GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.LEFT, True)
-    GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.TOP,  True)
-    GtkLayerShell.set_margin(win, GtkLayerShell.Edge.LEFT, margin_x)
-    GtkLayerShell.set_margin(win, GtkLayerShell.Edge.TOP,  margin_y)
+    if window_x is not None or window_y is not None:
+        display  = Gdk.Display.get_default()
+        monitor  = display.get_primary_monitor() or display.get_monitor(0)
+        geo      = monitor.get_geometry()
+        margin_x = window_x if window_x is not None else (geo.width  - window_width)  // 2
+        margin_y = window_y if window_y is not None else (geo.height - window_height) // 2
+        GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.LEFT, True)
+        GtkLayerShell.set_anchor(win, GtkLayerShell.Edge.TOP,  True)
+        GtkLayerShell.set_margin(win, GtkLayerShell.Edge.LEFT, margin_x)
+        GtkLayerShell.set_margin(win, GtkLayerShell.Edge.TOP,  margin_y)
 
     scroll = Gtk.ScrolledWindow()
     scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -733,6 +758,7 @@ def run_gui(
             flow.add(box)
 
         flow.show_all()
+        _select_first()   # a rescan rebuilt the grid, so the highlight is gone
         if pending:
             threading.Thread(
                 target=_fetch_covers_bg,
@@ -740,6 +766,13 @@ def run_gui(
                 daemon=True,
             ).start()
         return False
+
+    def _select_first():
+        # like rofi: the first entry is highlighted as soon as the window opens
+        first = flow.get_child_at_index(0)
+        if first:
+            flow.select_child(first)
+            first.grab_focus()
 
     _populate(games)
 
@@ -796,6 +829,7 @@ def run_gui(
                 _VISIBLE_FILE.touch()
                 win.show_all()
                 win.present()
+                _select_first()
                 if rescan_fn is not None:
                     threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
 
@@ -810,6 +844,7 @@ def run_gui(
         win.realize()
     else:
         win.show_all()
+        _select_first()
         if rescan_fn is not None:
             threading.Thread(target=rescan_fn, args=(_populate,), daemon=True).start()
 
